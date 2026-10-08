@@ -180,9 +180,11 @@ RSpec.describe StoreModel::Types::One do
 
       configuration = described_class.new(configuration_class).cast_value(payload.to_json)
 
-      expect(configuration.suppliers.map(&:title)).to eq(%w[first second])
-      expect(configuration.unknown_attributes).to eq(unknown_attributes)
-      expect(configuration.as_json).to include("extra_1" => 1, "extra_5000" => 5_000)
+      aggregate_failures do
+        expect(configuration.suppliers.map(&:title)).to eq(%w[first second])
+        expect(configuration.unknown_attributes).to eq(unknown_attributes)
+        expect(configuration.as_json).to include("extra_1" => 1, "extra_5000" => 5_000)
+      end
     end
 
     it "stores unknown symbol and string keys with their original values" do

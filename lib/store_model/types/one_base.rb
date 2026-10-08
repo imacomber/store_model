@@ -6,22 +6,26 @@ module StoreModel
   module Types
     # Implements type for handling an instance of StoreModel::Model
     class OneBase < Base
-      # Intercepts missing writers while a type retries model construction.
+      # A model initializer may require the input to be an exact Hash.
       module RecoveringAttributes
         attr_reader :unknown_attributes
 
-        def configure_recovery(unknown_attributes = {}, &recoverable)
+        def configure_recovery(unknown_attributes, &recoverable)
           @recoverable = recoverable
           @unknown_attributes = unknown_attributes
           self
         end
 
         def dup
-          super.extend(RecoveringAttributes).configure_recovery(unknown_attributes, &@recoverable)
+          copy = super
+          copy.extend(RecoveringAttributes)
+          copy.configure_recovery(unknown_attributes, &@recoverable)
         end
 
         def merge(*others, &block)
-          super.extend(RecoveringAttributes).configure_recovery(unknown_attributes, &@recoverable)
+          merged = super
+          merged.extend(RecoveringAttributes)
+          merged.configure_recovery(unknown_attributes, &@recoverable)
         end
 
         def each
@@ -83,9 +87,9 @@ module StoreModel
         input = input_attributes(value, exception)
         pairs = unwrap_attributes(input).to_a
         failed_index = pairs.index { |key, _| key.to_s == exception.attribute.to_s }
-        probe = exception.record
+        failed_model = exception.record
         model_class = expected_model_class(input)
-        validate_unknown_attribute!(probe, model_class, pairs, failed_index, exception)
+        validate_unknown_attribute!(failed_model, model_class, pairs, failed_index, exception)
 
         recover_model(model_class, pairs, failed_index, exception)
       end
@@ -95,7 +99,8 @@ module StoreModel
 
         key, value = pairs.fetch(failed_index)
         attributes = pairs.to_h.except(key)
-        recovering = attributes.extend(RecoveringAttributes).configure_recovery do |current_key, error|
+        recovering = attributes.extend(RecoveringAttributes)
+        recovering.configure_recovery({}) do |current_key, error|
           recoverable_missing_writer?(model_class, current_key, error)
         end
         recovering.record_unknown(key, value)
@@ -109,11 +114,13 @@ module StoreModel
         value.to_h
       end
 
-      def validate_unknown_attribute!(probe, model_class, pairs, failed_index, exception)
-        raise exception unless failed_index && probe.is_a?(StoreModel::Model)
-        raise exception unless selected_model_record?(probe, model_class)
-        raise exception unless missing_writer_error?(probe, exception)
-        raise exception if probe.respond_to?("#{pairs.fetch(failed_index).first}=")
+      def validate_unknown_attribute!(failed_model, model_class, pairs, failed_index, exception)
+        raise exception unless failed_index && failed_model.is_a?(StoreModel::Model)
+        raise exception unless selected_model_record?(failed_model, model_class)
+        raise exception unless missing_writer_error?(failed_model, exception)
+
+        failed_key = pairs.fetch(failed_index).first
+        raise exception if failed_model.respond_to?("#{failed_key}=")
       end
 
       def selected_model_record?(record, model_class)
@@ -123,16 +130,19 @@ module StoreModel
 
       def recoverable_missing_writer?(model_class, key, exception)
         record = exception.record
-        record.is_a?(model_class) && exception.attribute.to_s == key.to_s &&
-          !record.respond_to?("#{key}=") && missing_writer_error?(record, exception)
+        return false unless record.is_a?(model_class)
+        return false unless exception.attribute.to_s == key.to_s
+        return false if record.respond_to?("#{key}=")
+
+        missing_writer_error?(record, exception)
       end
 
-      def missing_writer_error?(probe, exception)
+      def missing_writer_error?(record, exception)
         # ActiveModel 7.0 and 7.1 raise directly when the writer is missing.
         return true if ActiveModel::VERSION::MAJOR == 7 && ActiveModel::VERSION::MINOR < 2
 
         cause = exception.cause
-        cause.is_a?(NoMethodError) && cause.name == :"#{exception.attribute}=" && cause.receiver.equal?(probe)
+        cause.is_a?(NoMethodError) && cause.name == :"#{exception.attribute}=" && cause.receiver.equal?(record)
       rescue ArgumentError
         false
       end
@@ -152,7 +162,7 @@ module StoreModel
         key = attributes.key?(exception.attribute.to_s) ? exception.attribute.to_s : exception.attribute.to_sym
 
         cast_value(attributes.except(key)).tap do |model|
-          model.unknown_attributes[exception.attribute.to_s] = attributes[key]
+          model.unknown_attributes[exception.attribute.to_s] = attributes.fetch(key, nil)
         end
       end
 
